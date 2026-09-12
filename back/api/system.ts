@@ -6,6 +6,8 @@ import config from '../config';
 import SystemService from '../services/system';
 import { celebrate, Joi } from 'celebrate';
 import UserService from '../services/user';
+import { t } from '../shared/i18n';
+import { isDefaultAuthInfo } from '../shared/auth';
 import {
   getUniqPath,
   handleLogPath,
@@ -38,14 +40,7 @@ export default (app: Router) => {
       const { version, changeLog, changeLogLink, publishTime } =
         await parseVersion(config.versionFile);
 
-      let isInitialized = true;
-      if (
-        Object.keys(authInfo).length === 2 &&
-        authInfo.username === 'admin' &&
-        authInfo.password === 'admin'
-      ) {
-        isInitialized = false;
-      }
+      const isInitialized = !isDefaultAuthInfo(authInfo);
       res.send({
         code: 200,
         data: {
@@ -278,8 +273,11 @@ export default (app: Router) => {
             },
             onEnd: async (cp, endTime, diff) => {
               // Close the stream after task completion
-              await logStreamManager.closeStream(await handleLogPath(logPath));
-              res.end();
+              try {
+                await logStreamManager.closeStream(await handleLogPath(logPath));
+              } finally {
+                res.end();
+              }
             },
             onError: async (message: string) => {
               res.write(message);
@@ -355,6 +353,11 @@ export default (app: Router) => {
       query: {
         startTime: Joi.string().allow('').optional(),
         endTime: Joi.string().allow('').optional(),
+        limit: Joi.number()
+          .integer()
+          .min(1)
+          .max(1024 * 1024)
+          .optional(),
         t: Joi.string().optional(),
       },
     }),
@@ -366,6 +369,7 @@ export default (app: Router) => {
           req.query as {
             startTime?: string;
             endTime?: string;
+            limit?: number;
           },
         );
       } catch (e) {
@@ -400,8 +404,11 @@ export default (app: Router) => {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const userService = Container.get(UserService);
-        await userService.resetAuthInfo(req.body);
-        res.send({ code: 200, message: '更新成功' });
+        const result = await userService.resetAuthInfo(req.body);
+        if (result) {
+          return res.send(result);
+        }
+        res.send({ code: 200, message: t('更新成功') });
       } catch (e) {
         return next(e);
       }
@@ -419,6 +426,42 @@ export default (app: Router) => {
       try {
         const systemService = Container.get(SystemService);
         const result = await systemService.updateTimezone(req.body);
+        res.send(result);
+      } catch (e) {
+        return next(e);
+      }
+    },
+  );
+
+  route.put(
+    '/config/lang',
+    celebrate({
+      body: Joi.object({
+        lang: Joi.string().allow('').allow(null),
+      }),
+    }),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const systemService = Container.get(SystemService);
+        const result = await systemService.updateLanguage(req.body);
+        res.send(result);
+      } catch (e) {
+        return next(e);
+      }
+    },
+  );
+
+  route.put(
+    '/config/panel-title',
+    celebrate({
+      body: Joi.object({
+        panelTitle: Joi.string().max(100).allow('').allow(null),
+      }),
+    }),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const systemService = Container.get(SystemService);
+        const result = await systemService.updatePanelTitle(req.body);
         res.send(result);
       } catch (e) {
         return next(e);

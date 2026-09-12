@@ -17,7 +17,10 @@ import { createRandomString, fileExist, isDemoEnv, safeJSONParse } from '../conf
 import OpenService from '../services/open';
 import { shareStore } from '../shared/store';
 import Logger from './logger';
+import cronClient from '../schedule/client';
 import { AppModel } from '../data/open';
+import { InstanceStatus, RunningInstanceModel } from '../data/runningInstance';
+import { setLang, systemLang } from '../shared/i18n';
 
 export default async () => {
   const cronService = Container.get(CronService);
@@ -36,10 +39,15 @@ export default async () => {
   if (!systemApp) {
     systemApp = await AppModel.create({
       name: 'system',
-      scopes: ['crons', 'system'],
+      scopes: ['crons', 'system', 'dashboard'],
       client_id: createRandomString(12, 12),
       client_secret: createRandomString(24, 24),
     });
+  } else if (!systemApp.scopes.includes('dashboard')) {
+    await AppModel.update(
+      { scopes: [...systemApp.scopes, 'dashboard'] },
+      { where: { name: 'system' } },
+    );
   }
   const [systemConfig] = await SystemModel.findOrCreate({
     where: { type: AuthDataType.systemConfig },
@@ -134,6 +142,12 @@ export default async () => {
   // 初始化更新所有任务状态为空闲
   await CrontabModel.update({ status: CrontabStatus.idle }, { where: {} });
 
+  // 清空所有运行中的实例记录（服务重启后进程已不存在）
+  await RunningInstanceModel.update(
+    { status: InstanceStatus.stopped },
+    { where: { status: InstanceStatus.running } },
+  );
+
   // 初始化时执行一次所有的 ql repo 任务
   CrontabModel.findAll({
     where: {
@@ -210,8 +224,22 @@ export default async () => {
     }
   });
 
+  // 初始化语言（必须在 autosave_crontab 之前）
+  const lang = systemConfig.info?.lang || systemLang();
+  setLang(lang);
+
+  // 确保 lang_env.sh 存在
+  try {
+    const langEnvExist = await fileExist(config.langEnvFile);
+    if (!langEnvExist) {
+      await writeFile(config.langEnvFile, `export QL_LANG='${lang}'\n`);
+    }
+  } catch { }
+
   // 初始化保存一次ck和定时任务数据
-  await cronService.autosave_crontab();
+  cronClient.readiness.configure(() => cronService.autosave_crontab(true));
+  await cronClient.readiness.recover();
+
   await envService.set_envs();
 
   const authInfo = await userService.getAuthInfo();

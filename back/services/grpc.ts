@@ -11,6 +11,7 @@ import { promisify } from 'util';
 import config from '../config';
 import { metricsService } from './metrics';
 import { Service } from 'typedi';
+import { initGrpcCerts } from '../config/grpcCerts';
 
 @Service()
 export class GrpcServerService {
@@ -29,10 +30,17 @@ export class GrpcServerService {
       this.server.addService(CronService, { addCron, delCron });
       this.server.addService(ApiService, Api);
 
+      const tlsConfig = await initGrpcCerts();
+      const credentials = ServerCredentials.createSsl(
+        Buffer.from(tlsConfig.caCert),
+        [{ cert_chain: Buffer.from(tlsConfig.serverCert), private_key: Buffer.from(tlsConfig.serverKey) }],
+        true,
+      );
+
       const grpcPort = config.grpcPort;
       const hostsToTry = [
         config.bindHostGrpc,
-        ...(config.bindHostGrpc !== '0.0.0.0' ? ['0.0.0.0'] : [])
+        ...(config.bindHostGrpc === '::' ? ['0.0.0.0'] : [])
       ];
       const bindAsync = promisify(this.server.bindAsync).bind(this.server);
 
@@ -41,8 +49,8 @@ export class GrpcServerService {
       for (const host of hostsToTry) {
         try {
           const address = this.formatGrpcAddress(host, grpcPort);
-          await bindAsync(address, ServerCredentials.createInsecure());
-          Logger.debug(`✌️ gRPC service started successfully on ${address}`);
+          await bindAsync(address, credentials);
+          Logger.debug(`[boot] gRPC service started successfully on ${address}`);
           metricsService.record('grpc_service_start', 1, {
             port: grpcPort.toString(),
             host

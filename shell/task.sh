@@ -4,9 +4,17 @@ dir_shell=$QL_DIR/shell
 . $dir_shell/share.sh
 . $dir_shell/api.sh
 
-trap "single_hanle" 2 3 20 15 14 19 1
+trap 'single_hanle SIGINT'  INT
+trap 'single_hanle SIGTERM' TERM
+trap 'single_hanle SIGHUP'  HUP
+trap 'single_hanle SIGALRM' ALRM
+trap 'single_hanle SIGTSTP' TSTP
+trap 'single_hanle SIGQUIT' QUIT
+
 single_hanle() {
-  eval MANUAL=true handle_task_end "$@" "$cmd"
+  _task_exit_code="${_task_exit_code:-$?}"
+  [[ "$_task_exit_code" == "0" ]] && _task_exit_code="1"
+  eval MANUAL=true handle_task_end "$@"
   exit 1
 }
 
@@ -44,8 +52,14 @@ handle_log_path() {
     fi
   fi
 
-  time=$(date "+$mtime_format")
-  log_time=$(format_log_time "$mtime_format" "$time")
+  if [[ $is_macos -ne 1 && $mtime_format == '%Y-%m-%d %H:%M:%S.%3N' ]]; then
+    # Render both representations from one clock snapshot, without parsing it
+    # again in a second date process.
+    IFS='|' read -r time log_time < <(date "+$mtime_format|%Y-%m-%d-%H-%M-%S-%3N")
+  else
+    time=$(date "+$mtime_format")
+    log_time=$(format_log_time "$mtime_format" "$time")
+  fi
   if [[ -z $log_name ]]; then
     log_dir_tmp="${file_param##*/}"
     if [[ $file_param =~ "/" ]]; then
@@ -116,7 +130,11 @@ format_params() {
 }
 
 init_begin_time() {
-  begin_time=$(format_time "$time_format" "$time")
+  if [[ $is_macos -ne 1 && $mtime_format == '%Y-%m-%d %H:%M:%S.%3N' && $time_format == '%Y-%m-%d %H:%M:%S' ]]; then
+    begin_time=${time%.*}
+  else
+    begin_time=$(format_time "$time_format" "$time")
+  fi
   begin_timestamp=$(format_timestamp "$time_format" "$time")
 }
 

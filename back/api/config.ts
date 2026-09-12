@@ -4,17 +4,19 @@ import { Logger } from 'winston';
 import config from '../config';
 import * as fs from 'fs/promises';
 import { celebrate, Joi } from 'celebrate';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { SAMPLE_FILES } from '../config/const';
+import { t } from '../shared/i18n';
 import ConfigService from '../services/config';
 import { writeFileWithLock } from '../shared/utils';
+import { resolveFileAccess } from '../shared/fileAccess';
 const route = Router();
 
 export default (app: Router) => {
   app.use('/configs', route);
 
   route.get(
-    '/sample',
+    '/samples',
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         res.send({
@@ -71,30 +73,32 @@ export default (app: Router) => {
       const logger: Logger = Container.get('logger');
       try {
         const { name, content } = req.body;
-        if (config.blackFileList.includes(name)) {
-          res.send({ code: 403, message: '文件无法访问' });
-        }
-        let path = join(config.configPath, name);
+        // Resolve path first to prevent traversal attacks
+        let basePath = config.configPath;
         if (name.startsWith('data/scripts/')) {
-          path = join(config.rootPath, name);
+          basePath = join(config.rootPath, 'data/scripts');
         }
-        await writeFileWithLock(path, content);
-        res.send({ code: 200, message: '保存成功' });
+        const cleanName = name.replace(/^data\/scripts\//, '');
+        const normalized = resolveFileAccess(
+          basePath,
+          [cleanName],
+          config.blackFileList,
+        );
+        if (!normalized) {
+          return res.send({ code: 403, message: t('文件无法访问') });
+        }
+        await writeFileWithLock(normalized, content);
+        res.send({ code: 200, message: t('保存成功') });
       } catch (e) {
         return next(e);
       }
     },
   );
 
-  route.get(
-    '/:file',
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const configService = Container.get(ConfigService);
-        await configService.getFile(req.params.file, res);
-      } catch (e) {
-        return next(e);
-      }
-    },
-  );
+  route.get('/:file', (req: Request, res: Response) => {
+    return res.send({
+      code: 410,
+      message: t('接口已下线，请使用 /configs/detail 接口'),
+    });
+  });
 };

@@ -22,9 +22,11 @@ import WebSocketManager from '../utils/websocket';
 export interface SharedContext {
   headerStyle: React.CSSProperties;
   isPhone: boolean;
+  siteTitle: string;
   theme: 'vs' | 'vs-dark';
   user: any;
   reloadUser: (needLoading?: boolean) => void;
+  reloadSystemConfig: () => void;
   reloadTheme: () => void;
   systemInfo: TSystemInfo;
 }
@@ -45,6 +47,9 @@ export default function () {
   const [user, setUser] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [systemInfo, setSystemInfo] = useState<TSystemInfo>();
+  const [siteTitle, setSiteTitle] = useState(
+    () => localStorage.getItem('qinglong_panel_title')?.trim() || intl.get('青龙'),
+  );
   const [collapsed, setCollapsed] = useState(false);
   const [initLoading, setInitLoading] = useState<boolean>(true);
   const {
@@ -89,7 +94,7 @@ export default function () {
         if (code === 200 && data.username) {
           setUser(data);
           if (location.pathname === '/') {
-            history.push('/crontab');
+            history.push('/dashboard');
           }
         }
         needLoading && setLoading(false);
@@ -124,6 +129,31 @@ export default function () {
     getUser(needLoading);
   };
 
+  const reloadSystemConfig = () => {
+    request
+      .get(`${config.apiPrefix}system/config`)
+      .then(({ data }: any) => {
+        const panelTitle = data?.info?.panelTitle?.trim();
+        if (panelTitle) {
+          setSiteTitle(panelTitle);
+          localStorage.setItem('qinglong_panel_title', panelTitle);
+        } else {
+          setSiteTitle(intl.get('青龙'));
+          localStorage.removeItem('qinglong_panel_title');
+        }
+        if (!data?.info?.lang) {
+          const browserLang =
+            localStorage.getItem('lang') ||
+            navigator.language?.slice(0, 2) ||
+            'zh';
+          request
+            .put(`${config.apiPrefix}system/config/lang`, { lang: browserLang })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+  };
+
   useEffect(() => {
     if (systemInfo && systemInfo.isInitialized && !user) {
       getUser();
@@ -133,6 +163,19 @@ export default function () {
   useEffect(() => {
     getHealthStatus();
   }, []);
+
+  useEffect(() => {
+    reloadSystemConfig();
+  }, []);
+
+  useEffect(() => {
+    if (!['/login', '/initialization', '/error'].includes(location.pathname)) {
+      return;
+    }
+    const title =
+      (config.documentTitleMap as any)[location.pathname] || intl.get('未找到');
+    document.title = `${title} - ${siteTitle}`;
+  }, [location.pathname, siteTitle]);
 
   useEffect(() => {
     if (theme === 'vs-dark') {
@@ -201,7 +244,7 @@ export default function () {
 
   if (['/login', '/initialization', '/error'].includes(location.pathname)) {
     if (systemInfo?.isInitialized && location.pathname === '/initialization') {
-      history.push('/crontab');
+      history.push('/dashboard');
     }
 
     if (systemInfo || location.pathname === '/error') {
@@ -212,7 +255,10 @@ export default function () {
             theme,
             user,
             reloadUser,
+            reloadSystemConfig,
             reloadTheme,
+            siteTitle,
+            systemInfo,
           }}
         />
       );
@@ -293,7 +339,7 @@ export default function () {
         const title =
           (config.documentTitleMap as any)[location.pathname] ||
           intl.get('未找到');
-        return `${title} - ${intl.get('青龙')}`;
+        return `${title} - ${siteTitle}`;
       }}
       onCollapse={setCollapsed}
       collapsed={collapsed}
@@ -355,7 +401,9 @@ export default function () {
           theme,
           user,
           reloadUser,
+          reloadSystemConfig,
           reloadTheme,
+          siteTitle,
           systemInfo,
         }}
       />

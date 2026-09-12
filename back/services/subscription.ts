@@ -24,6 +24,7 @@ import path, { join } from 'path';
 import ScheduleService, { TaskCallbacks } from './schedule';
 import { SimpleIntervalSchedule } from 'toad-scheduler';
 import SockService from './sock';
+import { t, tf } from '../shared/i18n';
 import SshKeyService from './sshKey';
 import dayjs from 'dayjs';
 import { LOG_END_SYMBOL } from '../config/const';
@@ -32,6 +33,7 @@ import { CrontabModel } from '../data/cron';
 import CrontabService from './cron';
 import taskLimit from '../shared/pLimit';
 import { logStreamManager } from '../shared/logStreamManager';
+import { LogReadOptions, readLogChunk } from '../shared/logReader';
 
 @Service()
 export default class SubscriptionService {
@@ -130,14 +132,14 @@ export default class SubscriptionService {
         );
         const absolutePath = await handleLogPath(
           logPath as string,
-          `## 开始执行... ${startTime.format('YYYY-MM-DD HH:mm:ss')}\n`,
+          tf('## 开始执行... %s\n', startTime.format('YYYY-MM-DD HH:mm:ss')),
         );
 
         // 执行sub_before
         let beforeStr = '';
         try {
           if (doc.sub_before) {
-            await logStreamManager.write(absolutePath, `\n## 执行before命令...\n\n`);
+            await logStreamManager.write(absolutePath, `\n## ${t('执行before命令...')}\n\n`);
             beforeStr = await promiseExec(doc.sub_before);
           }
         } catch (error: any) {
@@ -157,44 +159,54 @@ export default class SubscriptionService {
         );
       },
       onEnd: async (cp, endTime, diff) => {
-        const sub = await this.getDb({ id: doc.id });
-        const absolutePath = await handleLogPath(sub.log_path as string);
-
-        // 执行 sub_after
-        let afterStr = '';
+        let absolutePath: string | undefined;
         try {
-          if (sub.sub_after) {
-            await logStreamManager.write(absolutePath, `\n\n## 执行after命令...\n\n`);
-            afterStr = await promiseExec(sub.sub_after);
+          const sub = await this.getDb({ id: doc.id });
+          absolutePath = await handleLogPath(sub.log_path as string);
+
+          // 执行 sub_after
+          let afterStr = '';
+          try {
+            if (sub.sub_after) {
+              await logStreamManager.write(
+                absolutePath,
+                `\n\n## ${t('执行after命令...')}\n\n`,
+              );
+              afterStr = await promiseExec(sub.sub_after);
+            }
+          } catch (error: any) {
+            afterStr =
+              (error.stderr && error.stderr.toString()) || JSON.stringify(error);
           }
-        } catch (error: any) {
-          afterStr =
-            (error.stderr && error.stderr.toString()) || JSON.stringify(error);
+          if (afterStr) {
+            await logStreamManager.write(absolutePath, `${afterStr}\n`);
+          }
+
+          await logStreamManager.write(
+            absolutePath,
+            '\n' +
+              tf(
+                '## 执行结束... %s  耗时 %s 秒',
+                endTime.format('YYYY-MM-DD HH:mm:ss'),
+                String(diff),
+              ) +
+              LOG_END_SYMBOL,
+          );
+        } finally {
+          try {
+            if (absolutePath) await logStreamManager.closeStream(absolutePath);
+          } finally {
+            await SubscriptionModel.update(
+              { status: SubscriptionStatus.idle, pid: null } as any,
+              { where: { id: doc.id } },
+            );
+            this.sockService.sendMessage({
+              type: 'runSubscriptionEnd',
+              message: t('订阅执行完成'),
+              references: [doc.id as number],
+            });
+          }
         }
-        if (afterStr) {
-          await logStreamManager.write(absolutePath, `${afterStr}\n`);
-        }
-
-        await logStreamManager.write(
-          absolutePath,
-          `\n## 执行结束... ${endTime.format(
-            'YYYY-MM-DD HH:mm:ss',
-          )}  耗时 ${diff} 秒${LOG_END_SYMBOL}`,
-        );
-
-        // Close the stream after task completion
-        await logStreamManager.closeStream(absolutePath);
-
-        await SubscriptionModel.update(
-          { status: SubscriptionStatus.idle, pid: undefined },
-          { where: { id: sub.id } },
-        );
-
-        this.sockService.sendMessage({
-          type: 'runSubscriptionEnd',
-          message: '订阅执行完成',
-          references: [doc.id as number],
-        });
       },
       onError: async (message: string) => {
         const sub = await this.getDb({ id: doc.id });
@@ -361,14 +373,20 @@ export default class SubscriptionService {
     }
   }
 
-  public async log(id: number) {
+  public async log(id: number, options: LogReadOptions = {}) {
     const doc = await this.getDb({ id });
     if (!doc || !doc.log_path) {
-      return '';
+      return {
+        content: '',
+        offset: 0,
+        nextOffset: 0,
+        total: 0,
+        truncated: false,
+      };
     }
 
     const absolutePath = await handleLogPath(doc.log_path as string);
-    return await getFileContentByName(absolutePath);
+    return await readLogChunk(absolutePath, options);
   }
 
   public async logs(id: number) {
